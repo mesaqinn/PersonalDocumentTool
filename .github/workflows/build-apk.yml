@@ -36,24 +36,19 @@ jobs:
           sdkmanager --version
           adb version
 
-      - name: Check Gradle project
+            - name: Locate Gradle project
         run: |
-          if [ ! -f "./gradlew" ]; then
-            echo "ERROR: gradlew tidak ditemukan di root repository."
-            echo "Periksa lokasi project Android."
-            find . -maxdepth 4 \
-              \( -name gradlew -o -name settings.gradle.kts \
-              -o -name settings.gradle \) -print
-            exit 1
-          fi
+          echo "=== Mencari Gradle Wrapper ==="
 
-          if [ ! -f "./settings.gradle.kts" ] && \
-             [ ! -f "./settings.gradle" ]; then
-            echo "ERROR: settings.gradle(.kts) tidak ditemukan."
-            exit 1
-          fi
+          find . -maxdepth 7 \
+            -type f \
+            \( -name gradlew \
+            -o -name settings.gradle.kts \
+            -o -name settings.gradle \) \
+            -print
 
-          chmod +x ./gradlew
+          echo "=== Struktur direktori ==="
+          find . -maxdepth 3 -type d -print
 
       - name: Prepare Gradle
         run: ./gradlew --version
