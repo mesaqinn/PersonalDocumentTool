@@ -156,6 +156,134 @@ jobs:
 
           chmod +x ./gradlew
 
+      - name: Fix Java and Kotlin JVM targets
+        run: |
+          set -eu
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path(__import__("os").environ["GRADLE_DIR"])
+          app_file = root / "app" / "build.gradle.kts"
+
+          if not app_file.is_file():
+              raise SystemExit(
+                  f"ERROR: File konfigurasi aplikasi tidak ditemukan: {app_file}"
+              )
+
+          text = app_file.read_text(encoding="utf-8")
+
+          # Samakan target Java ke versi 17.
+          java_pattern = re.compile(
+              r'(?m)^[ \t]*sourceCompatibility\s*=\s*JavaVersion\.VERSION_1_8\s*$'
+          )
+          text, java_count = java_pattern.subn(
+              "        sourceCompatibility = JavaVersion.VERSION_17", text
+          )
+
+          target_pattern = re.compile(
+              r'(?m)^[ \t]*targetCompatibility\s*=\s*JavaVersion\.VERSION_1_8\s*$'
+          )
+          text, target_count = target_pattern.subn(
+              "        targetCompatibility = JavaVersion.VERSION_17", text
+          )
+
+          # Jika compileOptions belum ada, tambahkan ke blok android.
+          if not re.search(r'\bcompileOptions\s*\{', text):
+              android_match = re.search(r'\bandroid\s*\{', text)
+              if not android_match:
+                  raise SystemExit("ERROR: Blok android tidak ditemukan.")
+
+              text = (
+                  text[:android_match.end()]
+                  + "\n    compileOptions {\n"
+                    "        sourceCompatibility = JavaVersion.VERSION_17\n"
+                    "        targetCompatibility = JavaVersion.VERSION_17\n"
+                    "    }\n"
+                  + text[android_match.end():]
+              )
+          else:
+              # Lengkapi opsi Java jika salah satunya belum ada.
+              match = re.search(r'\bcompileOptions\s*\{', text)
+              depth = 1
+              i = match.end()
+              start = i
+
+              while i < len(text) and depth:
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                  i += 1
+
+              block = text[start:i - 1]
+
+              if not re.search(r'\bsourceCompatibility\s*=', block):
+                  block += "\n        sourceCompatibility = JavaVersion.VERSION_17\n"
+
+              if not re.search(r'\btargetCompatibility\s*=', block):
+                  block += "\n        targetCompatibility = JavaVersion.VERSION_17\n"
+
+              text = text[:start] + block + text[i - 1:]
+
+          # Kotlin Android plugin versi modern menggunakan compilerOptions.
+          # Hapus deklarasi target Kotlin lama yang bertentangan jika ada.
+          text = re.sub(
+              r'(?m)^[ \t]*kotlinOptions\s*\{[^}]*\}[ \t]*\n?',
+              '',
+              text
+          )
+
+          kotlin_block = """
+              kotlin {
+                  compilerOptions {
+                      jvmTarget.set(
+                          org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+                      )
+                  }
+              }
+          """
+
+          if re.search(r'(?m)^[ \t]*kotlin\s*\{', text):
+              # Jika sudah ada blok kotlin, ubah target yang dikenal.
+              text = re.sub(
+                  r'(?m)^[ \t]*jvmTarget\s*=\s*["\\'](?:1\.8|8|17)["\\'][ \t]*$',
+                  '            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)',
+                  text
+              )
+          else:
+              android_end = None
+              match = re.search(r'\bandroid\s*\{', text)
+
+              if not match:
+                  raise SystemExit("ERROR: Blok android tidak ditemukan.")
+
+              depth = 1
+              i = match.end()
+
+              while i < len(text) and depth:
+                  if text[i] == "{":
+                      depth += 1
+                  elif text[i] == "}":
+                      depth -= 1
+                  i += 1
+
+              android_end = i
+              text = text[:android_end] + "\n" + kotlin_block + "\n" + text[android_end:]
+
+          app_file.write_text(text, encoding="utf-8")
+
+          print("=== Konfigurasi target Java/Kotlin setelah perbaikan ===")
+          for line in text.splitlines():
+              if "sourceCompatibility" in line or \
+                 "targetCompatibility" in line or \
+                 "jvmTarget" in line:
+                  print(line.strip())
+
+          print("Konfigurasi berhasil diperbarui.")
+          PY
+
       - name: Prepare Gradle
         run: |
           set -eu
