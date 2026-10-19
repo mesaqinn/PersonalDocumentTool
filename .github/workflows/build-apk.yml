@@ -1,0 +1,77 @@
+name: Build PersonalDocumentTool APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "PersonalDocumentTool_latest.zip"
+      - ".github/workflows/build-apk.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Android project
+        run: |
+          mkdir -p project
+          unzip -q PersonalDocumentTool_latest.zip -d project
+
+          echo "=== Extracted files ==="
+          find project -maxdepth 4 -type f | head -200
+
+      - name: Locate Gradle project
+        shell: bash
+        run: |
+          SETTINGS_FILE=$(find project -name "settings.gradle.kts" -o -name "settings.gradle" | head -1)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle.kts/settings.gradle tidak ditemukan."
+            exit 1
+          fi
+
+          PROJECT_ROOT=$(dirname "$SETTINGS_FILE")
+
+          echo "Gradle project ditemukan di:"
+          echo "$PROJECT_ROOT"
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Prepare Gradle
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Find APK
+        run: |
+          echo "=== APK files ==="
+          find "${PROJECT_ROOT}" -type f -name "*.apk" -print
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PersonalDocumentTool-APK
+          path: "${{ env.PROJECT_ROOT }}/app/build/outputs/apk/**/*.apk"
+          if-no-files-found: error
