@@ -32,12 +32,25 @@ jobs:
         run: |
           set -eu
 
-          ZIP="PersonalDocumentTool_v0.2.0_source.zip"
+          ZIP=""
 
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: ZIP sumber versi 0.2.0 tidak ditemukan."
+          for candidate in \
+            "PersonalDocumentTool_v0.2.1_source_fixed.zip" \
+            "PersonalDocumentTool_v0.2.0_source.zip" \
+            "PersonalDocumentTool_latest.zip"; do
+            if [ -f "$candidate" ]; then
+              ZIP="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: ZIP sumber proyek tidak ditemukan."
+            ls -la
             exit 1
           fi
+
+          echo "Menggunakan sumber: $ZIP"
 
           unzip -t "$ZIP"
           mkdir -p extracted_project
@@ -70,6 +83,100 @@ jobs:
 
           echo "Proyek ditemukan: $PROJECT_DIR"
 
+      - name: Fix Compose import and JVM targets
+        shell: bash
+        run: |
+          set -eu
+          cd "$PROJECT_DIR"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # Perbaiki impor SelectionContainer.
+          main = Path(
+              "app/src/main/kotlin/com/esa/personaldocumenttool/MainActivity.kt"
+          )
+
+          if not main.exists():
+              matches = list(
+                  Path("app/src/main").rglob("MainActivity.kt")
+              )
+              if not matches:
+                  raise SystemExit("ERROR: MainActivity.kt tidak ditemukan.")
+              main = matches[0]
+
+          source = main.read_text()
+          source = source.replace(
+              "import androidx.compose.foundation.text.SelectionContainer",
+              "import androidx.compose.foundation.text.selection.SelectionContainer"
+          )
+
+          if "SelectionContainer" in source and not re.search(
+              r"(?m)^import androidx\.compose\.foundation\.text\.selection\.SelectionContainer\s*$",
+              source
+          ):
+              source = re.sub(
+                  r"(?m)^import androidx\.compose\.foundation\.text(?:\.selection)?\.SelectionContainer\s*$\n?",
+                  "",
+                  source
+              )
+              source = source.replace(
+                  "package com.esa.personaldocumenttool",
+                  "package com.esa.personaldocumenttool\n\n"
+                  "import androidx.compose.foundation.text.selection.SelectionContainer",
+                  1
+              )
+
+          main.write_text(source)
+          print("Impor SelectionContainer diperiksa:", main)
+
+          # Samakan target Java dan Kotlin ke versi 17.
+          gradle = Path("app/build.gradle.kts")
+          text = gradle.read_text()
+
+          if not re.search(r"(?m)^android\s*\{", text):
+              raise SystemExit("ERROR: Blok android tidak ditemukan.")
+
+          text = re.sub(
+              r"JavaVersion\.VERSION_1_8",
+              "JavaVersion.VERSION_17",
+              text
+          )
+
+          text = re.sub(
+              r'jvmTarget\s*=\s*["\'](?:1\.8|8)["\']',
+              'jvmTarget = "17"',
+              text
+          )
+
+          if not re.search(r"\bcompileOptions\s*\{", text):
+              text = re.sub(
+                  r"(?m)^android\s*\{",
+                  """android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }""",
+                  text,
+                  count=1
+              )
+
+          if not re.search(r"\bkotlinOptions\s*\{", text):
+              text = re.sub(
+                  r"(?m)^android\s*\{",
+                  """android {
+              kotlinOptions {
+                  jvmTarget = "17"
+              }""",
+                  text,
+                  count=1
+              )
+
+          gradle.write_text(text)
+          print("Target Java/Kotlin telah disesuaikan ke 17.")
+          PY
+
       - name: Prepare Gradle
         shell: bash
         run: |
@@ -98,67 +205,6 @@ jobs:
 
           chmod +x gradlew
 
-      - name: Fix Java and Kotlin targets
-        shell: bash
-        run: |
-          set -eu
-          cd "$PROJECT_DIR"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("app/build.gradle.kts")
-          text = p.read_text()
-
-          if not re.search(r'(?m)^android\s*\{', text):
-              raise SystemExit("ERROR: Blok android tidak ditemukan.")
-
-          # Pastikan konfigurasi Java dan Kotlin berada
-          # di dalam blok android, bukan di luarnya.
-          if not re.search(r'\bcompileOptions\s*\{', text):
-              text = re.sub(
-                  r'(?m)^android\s*\{',
-                  '''android {
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }''',
-                  text,
-                  count=1
-              )
-
-          if not re.search(r'\bkotlinOptions\s*\{', text):
-              text = re.sub(
-                  r'(?m)^android\s*\{',
-                  '''android {
-              kotlinOptions {
-                  jvmTarget = "17"
-              }''',
-                  text,
-                  count=1
-              )
-
-          # Samakan target Java yang sudah ada.
-          text = re.sub(
-              r'JavaVersion\.VERSION_1_8',
-              'JavaVersion.VERSION_17',
-              text
-          )
-
-          # Samakan target Kotlin yang sudah ada.
-          text = re.sub(
-              r'jvmTarget\s*=\s*["\'](?:1\.8|8)["\']',
-              'jvmTarget = "17"',
-              text
-          )
-
-          p.write_text(text)
-
-          print("Konfigurasi target Java/Kotlin telah diperbarui.")
-          print(text)
-          PY
-
       - name: Build debug APK
         shell: bash
         run: |
@@ -186,7 +232,7 @@ jobs:
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: PersonalDocumentTool-v0.2.0-debug
+          name: PersonalDocumentTool-debug-apk
           path: extracted_project/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
