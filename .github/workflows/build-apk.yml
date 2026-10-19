@@ -16,7 +16,7 @@ jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -36,83 +36,125 @@ jobs:
       - name: Verify Android SDK
         run: |
           set -eu
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           sdkmanager --version
           adb version
+
+      - name: Install Android SDK packages
+        run: |
+          set -eu
+          yes | sdkmanager --licenses || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Extract Android project
         run: |
           set -eu
 
-          ZIP_FILE="$GITHUB_WORKSPACE/PersonalDocumentTool_latest.zip"
+          ZIP="$GITHUB_WORKSPACE/PersonalDocumentTool_latest.zip"
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: PersonalDocumentTool_latest.zip tidak ditemukan."
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: ZIP project tidak ditemukan."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/project"
-          unzip -oq "$ZIP_FILE" -d "$GITHUB_WORKSPACE/project"
+          unzip -oq "$ZIP" -d "$GITHUB_WORKSPACE/project"
 
-          echo "=== Struktur project ==="
+          echo "=== Mencari project Android ==="
+
           find "$GITHUB_WORKSPACE/project" \
-            -maxdepth 5 -type f \
-            \( -name gradlew \
-            -o -name gradlew.bat \
-            -o -name settings.gradle \
-            -o -name settings.gradle.kts \
-            -o -name gradle-wrapper.jar \
-            -o -name gradle-wrapper.properties \
-            -o -name build.gradle \
-            -o -name build.gradle.kts \) \
+            -type f \
+            \( -name settings.gradle.kts \
+            -o -name settings.gradle \) \
             -print
 
       - name: Locate Gradle project
-        id: locate
         run: |
           set -eu
 
           ROOT="$GITHUB_WORKSPACE/project"
 
-          echo "=== Mencari Gradle Wrapper ==="
+          SETTINGS="$(find "$ROOT" -type f \
+            \( -name settings.gradle.kts \
+            -o -name settings.gradle \) \
+            -print -quit)"
 
-          GRADLEW="$(find "$ROOT" \
-            -type f -name gradlew -print -quit)"
-
-          if [ -z "$GRADLEW" ]; then
-            echo "ERROR: File gradlew tidak tersedia di ZIP."
-            echo "Memeriksa keberadaan wrapper dan konfigurasi Gradle..."
-
-            find "$ROOT" -type f \
-              \( -name 'gradle-wrapper.jar' \
-              -o -name 'gradle-wrapper.properties' \
-              -o -name 'settings.gradle' \
-              -o -name 'settings.gradle.kts' \
-              -o -name 'build.gradle' \
-              -o -name 'build.gradle.kts' \) \
-              -print
-
-            echo "Perlu memperbaiki atau menyediakan Gradle Wrapper."
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: settings.gradle tidak ditemukan."
             exit 1
           fi
 
-          DIR="$(dirname "$GRADLEW")"
+          DIR="$(dirname "$SETTINGS")"
 
-          if [ ! -f "$DIR/settings.gradle" ] && \
-             [ ! -f "$DIR/settings.gradle.kts" ]; then
-            echo "ERROR: File settings.gradle(.kts) tidak ditemukan."
-            echo "Lokasi wrapper: $GRADLEW"
+          if [ ! -f "$DIR/build.gradle.kts" ] && \
+             [ ! -f "$DIR/build.gradle" ]; then
+            echo "ERROR: File build.gradle tidak ditemukan."
             exit 1
           fi
-
-          chmod +x "$GRADLEW"
 
           echo "GRADLE_DIR=$DIR" >> "$GITHUB_ENV"
 
           echo "=== Project ditemukan ==="
-          echo "Direktori: $DIR"
           ls -la "$DIR"
+
+      - name: Install Gradle if wrapper is missing
+        run: |
+          set -eu
+
+          cd "$GRADLE_DIR"
+
+          if [ -f "./gradlew" ] && \
+             [ -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Gradle Wrapper sudah tersedia."
+            chmod +x ./gradlew
+            exit 0
+          fi
+
+          echo "Gradle Wrapper tidak lengkap."
+          echo "Memeriksa versi Gradle dari konfigurasi project..."
+
+          WRAPPER_PROPERTIES="gradle/wrapper/gradle-wrapper.properties"
+
+          if [ ! -f "$WRAPPER_PROPERTIES" ]; then
+            echo "ERROR: gradle-wrapper.properties tidak ditemukan."
+            exit 1
+          fi
+
+          DISTRIBUTION_URL="$(grep '^distributionUrl=' \
+            "$WRAPPER_PROPERTIES" | head -n 1 | cut -d '=' -f 2-)"
+
+          if [ -z "$DISTRIBUTION_URL" ]; then
+            echo "ERROR: distributionUrl tidak ditemukan."
+            exit 1
+          fi
+
+          VERSION="$(printf '%s' "$DISTRIBUTION_URL" \
+            | sed -E 's/.*gradle-([0-9]+\.[0-9]+(\.[0-9]+)?(-[a-zA-Z0-9.-]+)?)-.*/\1/')"
+
+          if [ -z "$VERSION" ] || \
+             [ "$VERSION" = "$DISTRIBUTION_URL" ]; then
+            echo "ERROR: Versi Gradle tidak dapat ditentukan."
+            exit 1
+          fi
+
+          echo "Versi Gradle: $VERSION"
+
+          sudo apt-get update
+          sudo apt-get install -y gradle
+
+          gradle --version
+
+          gradle wrapper --gradle-version "$VERSION"
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: Skrip gradlew gagal dibuat."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
 
       - name: Prepare Gradle
         run: |
@@ -129,8 +171,6 @@ jobs:
       - name: Find APK
         run: |
           set -eu
-
-          echo "=== Mencari APK ==="
 
           find "$GRADLE_DIR" \
             -type f \
