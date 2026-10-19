@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'PersonalDocumentTool_latest.zip'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,6 +16,7 @@ jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
@@ -36,36 +40,111 @@ jobs:
           sdkmanager --version
           adb version
 
-            - name: Locate Gradle project
+      - name: Install Android SDK packages
         run: |
-          echo "=== Mencari Gradle Wrapper ==="
+          yes | sdkmanager --licenses || true
 
-          find . -maxdepth 7 \
-            -type f \
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "platforms;android-35" \
+            "platforms;android-36" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0" \
+            "build-tools;36.0.0"
+
+      - name: Extract Android project
+        run: |
+          set -eu
+
+          ZIP_FILE="PersonalDocumentTool_latest.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: $ZIP_FILE tidak ditemukan."
+            echo "Pastikan ZIP tersedia di root repository."
+            exit 1
+          fi
+
+          mkdir -p project
+          unzip -oq "$ZIP_FILE" -d project
+
+          echo "=== File project yang ditemukan ==="
+          find project -maxdepth 5 -type f \
             \( -name gradlew \
+            -o -name settings.gradle \
             -o -name settings.gradle.kts \
-            -o -name settings.gradle \) \
+            -o -name build.gradle \
+            -o -name build.gradle.kts \) \
             -print
 
-          echo "=== Struktur direktori ==="
-          find . -maxdepth 3 -type d -print
+      - name: Locate Gradle project
+        run: |
+          set -eu
+
+          GRADLEW="$(find "$GITHUB_WORKSPACE/project" \
+            -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: File gradlew tidak ditemukan."
+            echo "Struktur direktori project:"
+            find "$GITHUB_WORKSPACE/project" \
+              -maxdepth 6 -type d -print
+            exit 1
+          fi
+
+          GRADLE_DIR="$(dirname "$GRADLEW")"
+
+          if [ ! -f "$GRADLE_DIR/settings.gradle.kts" ] && \
+             [ ! -f "$GRADLE_DIR/settings.gradle" ]; then
+            echo "ERROR: File settings.gradle(.kts) tidak ditemukan."
+            echo "Lokasi gradlew: $GRADLEW"
+            exit 1
+          fi
+
+          echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
+
+          echo "=== Lokasi project Gradle ==="
+          echo "$GRADLE_DIR"
+
+          echo "=== Isi folder project ==="
+          ls -la "$GRADLE_DIR"
 
       - name: Prepare Gradle
-        run: ./gradlew --version
+        run: |
+          set -eu
+
+          cd "$GRADLE_DIR"
+          chmod +x ./gradlew
+          ./gradlew --version
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+        run: |
+          set -eu
+
+          cd "$GRADLE_DIR"
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
 
       - name: Find APK
         run: |
-          echo "APK yang berhasil dibuat:"
-          find . -type f -path '*/build/outputs/apk/*' \
-            -name '*.apk' -print
+          set -eu
 
-          if ! find . -type f \
+          echo "=== Mencari APK ==="
+
+          find "$GRADLE_DIR" \
+            -type f \
+            -path '*/build/outputs/apk/*' \
+            -name '*.apk' \
+            -print
+
+          if ! find "$GRADLE_DIR" \
+            -type f \
             -path '*/build/outputs/apk/*' \
             -name '*.apk' | grep -q .; then
-            echo "ERROR: APK tidak ditemukan."
+            echo "ERROR: Build selesai tetapi APK tidak ditemukan."
             exit 1
           fi
 
@@ -73,6 +152,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PersonalDocumentTool-debug-apk
-          path: '**/build/outputs/apk/**/*.apk'
+          path: project/**/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
