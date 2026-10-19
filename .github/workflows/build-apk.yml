@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android Debug APK
+    name: Build Personal Document Tool
     runs-on: ubuntu-latest
 
     steps:
@@ -27,186 +27,161 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Check source ZIP
+        shell: bash
+        run: |
+          set -eu
+
+          ZIP_FILE="PersonalDocumentTool_v0.2.0_source.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP versi 0.2.0 tidak ditemukan."
+            echo "File ZIP yang tersedia:"
+            find . -maxdepth 2 -type f -name '*.zip'
+            exit 1
+          fi
+
+          unzip -t "$ZIP_FILE"
+
       - name: Extract Android project
         shell: bash
         run: |
           set -eu
 
-          ZIP_FILE="PersonalDocumentTool_latest.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: $ZIP_FILE tidak ditemukan di root repository."
-            echo "Daftar file repository:"
-            ls -la
-            exit 1
-          fi
-
-          unzip -t "$ZIP_FILE"
           mkdir -p extracted_project
-          unzip -oq "$ZIP_FILE" -d extracted_project
+          unzip -oq PersonalDocumentTool_v0.2.0_source.zip \
+            -d extracted_project
 
           ROOT="$(pwd)/extracted_project"
 
-          SETTINGS_FILE="$(find "$ROOT" -type f -name 'settings.gradle.kts' -print -quit)"
+          SETTINGS_FILE="$(find "$ROOT" -type f \
+            -name 'settings.gradle.kts' -print -quit)"
 
           if [ -z "$SETTINGS_FILE" ]; then
-            SETTINGS_FILE="$(find "$ROOT" -type f -name 'settings.gradle' -print -quit)"
+            SETTINGS_FILE="$(find "$ROOT" -type f \
+              -name 'settings.gradle' -print -quit)"
           fi
 
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle.kts atau settings.gradle tidak ditemukan."
-            find "$ROOT" -maxdepth 5 -type f -print
+            echo "ERROR: File settings Gradle tidak ditemukan."
+            find "$ROOT" -maxdepth 5 -type f
             exit 1
           fi
 
-          GRADLE_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
-          if [ ! -d "$GRADLE_DIR/app" ]; then
-            echo "ERROR: Folder app tidak ditemukan di $GRADLE_DIR"
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: Konfigurasi Gradle aplikasi tidak ditemukan."
             exit 1
           fi
 
-          echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
-          echo "Proyek Android ditemukan: $GRADLE_DIR"
-          ls -la "$GRADLE_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Proyek ditemukan:"
+          echo "$PROJECT_DIR"
+
+          echo "Versi aplikasi:"
+          grep -E 'versionCode|versionName|compileSdk|minSdk|targetSdk' \
+            "$PROJECT_DIR/app/build.gradle.kts"
 
       - name: Prepare Gradle wrapper
         shell: bash
         run: |
           set -eu
-          cd "$GRADLE_DIR"
 
-          if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+          cd "$PROJECT_DIR"
+
+          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
             echo "ERROR: gradle-wrapper.properties tidak ditemukan."
             exit 1
           fi
 
-          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "Wrapper tidak lengkap. Menyiapkan Gradle 8.11.1."
+          if [ ! -f gradlew ] || \
+             [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+
+            echo "Menyiapkan Gradle 8.11.1..."
 
             curl -fsSL \
               https://services.gradle.org/distributions/gradle-8.11.1-bin.zip \
               -o /tmp/gradle-8.11.1-bin.zip
 
-            mkdir -p /tmp/gradle-dist
-            unzip -oq /tmp/gradle-8.11.1-bin.zip -d /tmp/gradle-dist
+            mkdir -p /tmp/gradle-distribution
 
-            /tmp/gradle-dist/gradle-8.11.1/bin/gradle wrapper \
+            unzip -oq /tmp/gradle-8.11.1-bin.zip \
+              -d /tmp/gradle-distribution
+
+            /tmp/gradle-distribution/gradle-8.11.1/bin/gradle wrapper \
               --gradle-version 8.11.1 \
               --distribution-type bin
           fi
 
           chmod +x gradlew
 
-      - name: Fix Java and Kotlin JVM targets
+          echo "Gradle wrapper siap."
+
+      - name: Validate Android configuration
         shell: bash
         run: |
           set -eu
 
+          cd "$PROJECT_DIR"
+
+          echo "Memeriksa konfigurasi Java dan Kotlin..."
+
           python3 - <<'PY'
           from pathlib import Path
-          import os
           import re
 
-          root = Path(os.environ["GRADLE_DIR"])
-          build_file = root / "app" / "build.gradle.kts"
+          p = Path("app/build.gradle.kts")
+          text = p.read_text()
 
-          if not build_file.is_file():
-              raise SystemExit(f"ERROR: File tidak ditemukan: {build_file}")
+          if "com.android.application" not in text:
+              raise SystemExit("Plugin Android tidak ditemukan.")
 
-          text = build_file.read_text()
+          if "org.jetbrains.kotlin.android" not in text:
+              raise SystemExit("Plugin Kotlin Android tidak ditemukan.")
 
-          # Hapus konfigurasi target lama jika ada.
-          text = re.sub(
-              r'JavaVersion\.VERSION_1_8',
-              'JavaVersion.VERSION_17',
-              text
-          )
+          if not re.search(r'compileSdk\s*=\s*35', text):
+              print("Peringatan: compileSdk tidak menggunakan versi 35.")
 
-          # Pastikan compileOptions berada di dalam blok android.
-          if not re.search(r'\bcompileOptions\s*\{', text):
-              match = re.search(r'(?m)^android\s*\{', text)
-              if not match:
-                  raise SystemExit("ERROR: Blok android tidak ditemukan.")
-
-              insert_at = match.end()
-              block = """
-              
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              """
-              text = text[:insert_at] + block + text[insert_at:]
-          else:
-              text = re.sub(
-                  r'(?m)^\s*sourceCompatibility\s*=\s*JavaVersion\.VERSION_1_8\s*$',
-                  '        sourceCompatibility = JavaVersion.VERSION_17',
-                  text
-              )
-              text = re.sub(
-                  r'(?m)^\s*targetCompatibility\s*=\s*JavaVersion\.VERSION_1_8\s*$',
-                  '        targetCompatibility = JavaVersion.VERSION_17',
-                  text
-              )
-
-          # Pastikan Kotlin menggunakan JVM 17.
-          if not re.search(r'\bkotlinOptions\s*\{', text):
-              match = re.search(r'(?m)^android\s*\{', text)
-              if not match:
-                  raise SystemExit("ERROR: Blok android tidak ditemukan.")
-
-              insert_at = match.end()
-              block = """
-              
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-              """
-              text = text[:insert_at] + block + text[insert_at:]
-          else:
-              text = re.sub(
-                  r'(?m)jvmTarget\s*=\s*["\']1\.8["\']',
-                  'jvmTarget = "17"',
-                  text
-              )
-
-          build_file.write_text(text)
-          print(f"Konfigurasi target diperbarui: {build_file}")
-          print("Target Java dan Kotlin: 17")
+          print("File konfigurasi ditemukan dan plugin utama tersedia.")
+          print("Konfigurasi sumber tidak diubah otomatis.")
           PY
-
-          echo "Memeriksa konfigurasi hasil perubahan:"
-          sed -n '1,100p' "$GRADLE_DIR/app/build.gradle.kts"
 
       - name: Build debug APK
         shell: bash
         run: |
           set -eu
-          cd "$GRADLE_DIR"
+
+          cd "$PROJECT_DIR"
+
           java -version
-          ./gradlew --no-daemon --stacktrace assembleDebug
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
           set -eu
 
-          APK="$(find "$GRADLE_DIR/app/build/outputs/apk/debug" \
-            -type f -name '*.apk' -print -quit)"
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK tidak ditemukan setelah proses build."
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK tidak ditemukan."
+            find "$PROJECT_DIR/app/build/outputs" -type f || true
             exit 1
           fi
 
-          echo "APK berhasil dibuat: $APK"
+          echo "APK berhasil dibuat:"
           ls -lh "$APK"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: PersonalDocumentTool-debug-apk
+          name: PersonalDocumentTool-v0.2.0-debug
           path: extracted_project/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
