@@ -27,68 +27,53 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Check source ZIP
-        shell: bash
-        run: |
-          set -eu
-
-          ZIP_FILE="PersonalDocumentTool_v0.2.0_source.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: ZIP versi 0.2.0 tidak ditemukan."
-            echo "File ZIP yang tersedia:"
-            find . -maxdepth 2 -type f -name '*.zip'
-            exit 1
-          fi
-
-          unzip -t "$ZIP_FILE"
-
       - name: Extract Android project
         shell: bash
         run: |
           set -eu
 
+          ZIP="PersonalDocumentTool_v0.2.0_source.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: ZIP sumber versi 0.2.0 tidak ditemukan."
+            exit 1
+          fi
+
+          unzip -t "$ZIP"
           mkdir -p extracted_project
-          unzip -oq PersonalDocumentTool_v0.2.0_source.zip \
-            -d extracted_project
+          unzip -oq "$ZIP" -d extracted_project
 
           ROOT="$(pwd)/extracted_project"
 
-          SETTINGS_FILE="$(find "$ROOT" -type f \
+          SETTINGS="$(find "$ROOT" -type f \
             -name 'settings.gradle.kts' -print -quit)"
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            SETTINGS_FILE="$(find "$ROOT" -type f \
+          if [ -z "$SETTINGS" ]; then
+            SETTINGS="$(find "$ROOT" -type f \
               -name 'settings.gradle' -print -quit)"
           fi
 
-          if [ -z "$SETTINGS_FILE" ]; then
+          if [ -z "$SETTINGS" ]; then
             echo "ERROR: File settings Gradle tidak ditemukan."
             find "$ROOT" -maxdepth 5 -type f
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR="$(dirname "$SETTINGS")"
 
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: Konfigurasi Gradle aplikasi tidak ditemukan."
+            echo "ERROR: app/build.gradle.kts tidak ditemukan."
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          echo "Proyek ditemukan:"
-          echo "$PROJECT_DIR"
+          echo "Proyek ditemukan: $PROJECT_DIR"
 
-          echo "Versi aplikasi:"
-          grep -E 'versionCode|versionName|compileSdk|minSdk|targetSdk' \
-            "$PROJECT_DIR/app/build.gradle.kts"
-
-      - name: Prepare Gradle wrapper
+      - name: Prepare Gradle
         shell: bash
         run: |
           set -eu
-
           cd "$PROJECT_DIR"
 
           if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
@@ -99,34 +84,25 @@ jobs:
           if [ ! -f gradlew ] || \
              [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
 
-            echo "Menyiapkan Gradle 8.11.1..."
-
             curl -fsSL \
               https://services.gradle.org/distributions/gradle-8.11.1-bin.zip \
-              -o /tmp/gradle-8.11.1-bin.zip
+              -o /tmp/gradle.zip
 
-            mkdir -p /tmp/gradle-distribution
+            mkdir -p /tmp/gradle-dist
+            unzip -oq /tmp/gradle.zip -d /tmp/gradle-dist
 
-            unzip -oq /tmp/gradle-8.11.1-bin.zip \
-              -d /tmp/gradle-distribution
-
-            /tmp/gradle-distribution/gradle-8.11.1/bin/gradle wrapper \
+            /tmp/gradle-dist/gradle-8.11.1/bin/gradle wrapper \
               --gradle-version 8.11.1 \
               --distribution-type bin
           fi
 
           chmod +x gradlew
 
-          echo "Gradle wrapper siap."
-
-      - name: Validate Android configuration
+      - name: Fix Java and Kotlin targets
         shell: bash
         run: |
           set -eu
-
           cd "$PROJECT_DIR"
-
-          echo "Memeriksa konfigurasi Java dan Kotlin..."
 
           python3 - <<'PY'
           from pathlib import Path
@@ -135,32 +111,61 @@ jobs:
           p = Path("app/build.gradle.kts")
           text = p.read_text()
 
-          if "com.android.application" not in text:
-              raise SystemExit("Plugin Android tidak ditemukan.")
+          if not re.search(r'(?m)^android\s*\{', text):
+              raise SystemExit("ERROR: Blok android tidak ditemukan.")
 
-          if "org.jetbrains.kotlin.android" not in text:
-              raise SystemExit("Plugin Kotlin Android tidak ditemukan.")
+          # Pastikan konfigurasi Java dan Kotlin berada
+          # di dalam blok android, bukan di luarnya.
+          if not re.search(r'\bcompileOptions\s*\{', text):
+              text = re.sub(
+                  r'(?m)^android\s*\{',
+                  '''android {
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }''',
+                  text,
+                  count=1
+              )
 
-          if not re.search(r'compileSdk\s*=\s*35', text):
-              print("Peringatan: compileSdk tidak menggunakan versi 35.")
+          if not re.search(r'\bkotlinOptions\s*\{', text):
+              text = re.sub(
+                  r'(?m)^android\s*\{',
+                  '''android {
+              kotlinOptions {
+                  jvmTarget = "17"
+              }''',
+                  text,
+                  count=1
+              )
 
-          print("File konfigurasi ditemukan dan plugin utama tersedia.")
-          print("Konfigurasi sumber tidak diubah otomatis.")
+          # Samakan target Java yang sudah ada.
+          text = re.sub(
+              r'JavaVersion\.VERSION_1_8',
+              'JavaVersion.VERSION_17',
+              text
+          )
+
+          # Samakan target Kotlin yang sudah ada.
+          text = re.sub(
+              r'jvmTarget\s*=\s*["\'](?:1\.8|8)["\']',
+              'jvmTarget = "17"',
+              text
+          )
+
+          p.write_text(text)
+
+          print("Konfigurasi target Java/Kotlin telah diperbarui.")
+          print(text)
           PY
 
       - name: Build debug APK
         shell: bash
         run: |
           set -eu
-
           cd "$PROJECT_DIR"
 
-          java -version
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            assembleDebug
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Verify APK
         shell: bash
@@ -175,8 +180,8 @@ jobs:
             exit 1
           fi
 
-          echo "APK berhasil dibuat:"
           ls -lh "$APK"
+          echo "APK berhasil dibuat."
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
