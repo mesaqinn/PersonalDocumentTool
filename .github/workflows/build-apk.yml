@@ -35,98 +35,96 @@ jobs:
 
       - name: Verify Android SDK
         run: |
+          set -eu
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           sdkmanager --version
           adb version
 
-      - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-34" \
-            "platforms;android-35" \
-            "platforms;android-36" \
-            "build-tools;34.0.0" \
-            "build-tools;35.0.0" \
-            "build-tools;36.0.0"
-
       - name: Extract Android project
         run: |
           set -eu
 
-          ZIP_FILE="PersonalDocumentTool_latest.zip"
+          ZIP_FILE="$GITHUB_WORKSPACE/PersonalDocumentTool_latest.zip"
 
           if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: $ZIP_FILE tidak ditemukan."
-            echo "Pastikan ZIP tersedia di root repository."
+            echo "ERROR: PersonalDocumentTool_latest.zip tidak ditemukan."
             exit 1
           fi
 
-          mkdir -p project
-          unzip -oq "$ZIP_FILE" -d project
+          mkdir -p "$GITHUB_WORKSPACE/project"
+          unzip -oq "$ZIP_FILE" -d "$GITHUB_WORKSPACE/project"
 
-          echo "=== File project yang ditemukan ==="
-          find project -maxdepth 5 -type f \
+          echo "=== Struktur project ==="
+          find "$GITHUB_WORKSPACE/project" \
+            -maxdepth 5 -type f \
             \( -name gradlew \
+            -o -name gradlew.bat \
             -o -name settings.gradle \
             -o -name settings.gradle.kts \
+            -o -name gradle-wrapper.jar \
+            -o -name gradle-wrapper.properties \
             -o -name build.gradle \
             -o -name build.gradle.kts \) \
             -print
 
       - name: Locate Gradle project
+        id: locate
         run: |
           set -eu
 
-          GRADLEW="$(find "$GITHUB_WORKSPACE/project" \
+          ROOT="$GITHUB_WORKSPACE/project"
+
+          echo "=== Mencari Gradle Wrapper ==="
+
+          GRADLEW="$(find "$ROOT" \
             -type f -name gradlew -print -quit)"
 
           if [ -z "$GRADLEW" ]; then
-            echo "ERROR: File gradlew tidak ditemukan."
-            echo "Struktur direktori project:"
-            find "$GITHUB_WORKSPACE/project" \
-              -maxdepth 6 -type d -print
+            echo "ERROR: File gradlew tidak tersedia di ZIP."
+            echo "Memeriksa keberadaan wrapper dan konfigurasi Gradle..."
+
+            find "$ROOT" -type f \
+              \( -name 'gradle-wrapper.jar' \
+              -o -name 'gradle-wrapper.properties' \
+              -o -name 'settings.gradle' \
+              -o -name 'settings.gradle.kts' \
+              -o -name 'build.gradle' \
+              -o -name 'build.gradle.kts' \) \
+              -print
+
+            echo "Perlu memperbaiki atau menyediakan Gradle Wrapper."
             exit 1
           fi
 
-          GRADLE_DIR="$(dirname "$GRADLEW")"
+          DIR="$(dirname "$GRADLEW")"
 
-          if [ ! -f "$GRADLE_DIR/settings.gradle.kts" ] && \
-             [ ! -f "$GRADLE_DIR/settings.gradle" ]; then
+          if [ ! -f "$DIR/settings.gradle" ] && \
+             [ ! -f "$DIR/settings.gradle.kts" ]; then
             echo "ERROR: File settings.gradle(.kts) tidak ditemukan."
-            echo "Lokasi gradlew: $GRADLEW"
+            echo "Lokasi wrapper: $GRADLEW"
             exit 1
           fi
 
-          echo "GRADLE_DIR=$GRADLE_DIR" >> "$GITHUB_ENV"
+          chmod +x "$GRADLEW"
 
-          echo "=== Lokasi project Gradle ==="
-          echo "$GRADLE_DIR"
+          echo "GRADLE_DIR=$DIR" >> "$GITHUB_ENV"
 
-          echo "=== Isi folder project ==="
-          ls -la "$GRADLE_DIR"
+          echo "=== Project ditemukan ==="
+          echo "Direktori: $DIR"
+          ls -la "$DIR"
 
       - name: Prepare Gradle
         run: |
           set -eu
-
           cd "$GRADLE_DIR"
-          chmod +x ./gradlew
           ./gradlew --version
 
       - name: Build debug APK
         run: |
           set -eu
-
           cd "$GRADLE_DIR"
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            assembleDebug
+          ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Find APK
         run: |
@@ -144,7 +142,7 @@ jobs:
             -type f \
             -path '*/build/outputs/apk/*' \
             -name '*.apk' | grep -q .; then
-            echo "ERROR: Build selesai tetapi APK tidak ditemukan."
+            echo "ERROR: APK tidak ditemukan."
             exit 1
           fi
 
